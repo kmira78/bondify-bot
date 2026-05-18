@@ -14,7 +14,7 @@ from telegram.ext import (
 )
 
 from moex import fetch_bonds, warmup_cache, compute_ofz_duration
-from zcyc import fetch_zcyc, zcyc_yield
+from zcyc import fetch_zcyc, fetch_zcyc_prev, zcyc_yield
 from charts import generate_ofz_curve
 from bond_calc import BondSpec, calc_from_price, calc_from_ytm as bond_calc_from_ytm
 
@@ -99,7 +99,11 @@ async def _ofz_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE, from_callba
     else:
         msg = await update.message.reply_text("⏳ Загружаю данные ОФЗ и КБД...")
 
-    bonds, zcyc_pts = await asyncio.gather(fetch_bonds("ofz"), fetch_zcyc())
+    bonds, zcyc_pts, (zcyc_prev_pts, prev_date) = await asyncio.gather(
+        fetch_bonds("ofz"),
+        fetch_zcyc(),
+        fetch_zcyc_prev(),
+    )
 
     # Filter: fixed coupon only, exclude ОФЗ-ПК (SU52xxx, SU46xxx), compute Macaulay duration
     EXCLUDE_PREFIXES = ("SU52", "SU46")
@@ -118,17 +122,20 @@ async def _ofz_chart(update: Update, ctx: ContextTypes.DEFAULT_TYPE, from_callba
         return
 
     try:
-        png = generate_ofz_curve(enriched, zcyc_pts)
+        png = generate_ofz_curve(enriched, zcyc_pts,
+                                 zcyc_prev_points=zcyc_prev_pts or None,
+                                 zcyc_prev_date=prev_date)
     except Exception as e:
         await msg.edit_text(f"❌ Ошибка графика: {e}", reply_markup=BACK_KB)
         return
 
     ytm_min = min(float(b["yield"]) for b in enriched)
     ytm_max = max(float(b["yield"]) for b in enriched)
+    prev_info = f" | КБД пред.: {prev_date}" if prev_date else ""
 
     caption = (
         f"📈 <b>Карта рынка ОФЗ (фикс. купон)</b>\n"
-        f"Бумаг: {len(enriched)} | YTM: {ytm_min:.1f}% – {ytm_max:.1f}%"
+        f"Бумаг: {len(enriched)} | YTM: {ytm_min:.1f}% – {ytm_max:.1f}%{prev_info}"
     )
     chat_id = update.effective_chat.id
     await ctx.bot.send_photo(chat_id=chat_id, photo=io.BytesIO(png),
